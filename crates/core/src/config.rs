@@ -1,6 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// 临时文件名生成策略
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TempNameStrategy {
+    /// 1. m3u8内容哈希
+    ContentHash,
+    /// 2. m3u8文件名 (默认)
+    #[default]
+    Filename,
+}
+
 /// 应用配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -12,6 +22,8 @@ pub struct AppConfig {
     pub max_retries: u32,
     /// 临时文件目录
     pub temp_dir: PathBuf,
+    /// 临时文件名策略
+    pub temp_name_strategy: TempNameStrategy,
 }
 
 impl Default for AppConfig {
@@ -23,6 +35,7 @@ impl Default for AppConfig {
             save_path,
             max_retries: 3,
             temp_dir,
+            temp_name_strategy: TempNameStrategy::default(),
         }
     }
 }

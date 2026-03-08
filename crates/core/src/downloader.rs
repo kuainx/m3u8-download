@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::config::{AppConfig, TempNameStrategy};
 use crate::crypto;
 use crate::merger;
 use crate::parser::{self, Segment};
@@ -170,11 +170,25 @@ impl DownloadTask {
 
         let (playlist, raw_content) = parser::fetch_and_parse(&client, &self.url).await?;
 
-        // 生成任务 ID (M3U8 内容 SHA-256 前 12 位)
-        let mut hasher = Sha256::new();
-        hasher.update(raw_content.as_bytes());
-        let hash = hex::encode(hasher.finalize());
-        let task_id = hash[..12].to_string();
+        // 根据策略生成任务 ID
+        let task_id = match self.config.temp_name_strategy {
+            TempNameStrategy::ContentHash => {
+                let mut hasher = Sha256::new();
+                hasher.update(raw_content.as_bytes());
+                let hash = hex::encode(hasher.finalize());
+                hash[..12].to_string()
+            }
+            TempNameStrategy::Filename => {
+                let url_path = self.url.split('?').next().unwrap_or(&self.url);
+                let url_path = url_path.split('#').next().unwrap_or(url_path);
+                std::path::Path::new(url_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("m3u8_task")
+                    .to_string()
+            }
+        };
+
         {
             let mut id_guard = self.task_id.lock().unwrap();
             *id_guard = task_id.clone();

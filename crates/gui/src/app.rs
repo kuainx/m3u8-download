@@ -1,6 +1,6 @@
 use eframe::egui;
 use m3u8_downloader_core::downloader::{DownloadProgress, DownloadTask, TaskStatus};
-use m3u8_downloader_core::AppConfig;
+use m3u8_downloader_core::{AppConfig, TempNameStrategy};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,6 +10,7 @@ const CONFIG_FILE: &str = "m3u8_dl.cfg";
 struct GuiConfig {
     pub save_path: Option<String>,
     pub concurrent_downloads: Option<usize>,
+    pub temp_name_strategy: Option<TempNameStrategy>,
 }
 
 impl GuiConfig {
@@ -23,6 +24,12 @@ impl GuiConfig {
                         "concurrent_downloads" => {
                             config.concurrent_downloads = v.trim().parse().ok()
                         }
+                        "temp_name_strategy" => {
+                            config.temp_name_strategy = match v.trim() {
+                                "ContentHash" => Some(TempNameStrategy::ContentHash),
+                                _ => Some(TempNameStrategy::Filename),
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -31,10 +38,14 @@ impl GuiConfig {
         config
     }
 
-    fn save(save_path: &str, concurrent_downloads: usize) {
+    fn save(save_path: &str, concurrent_downloads: usize, strategy: TempNameStrategy) {
+        let strategy_str = match strategy {
+            TempNameStrategy::ContentHash => "ContentHash",
+            TempNameStrategy::Filename => "Filename",
+        };
         let content = format!(
-            "save_path={}\nconcurrent_downloads={}\n",
-            save_path, concurrent_downloads
+            "save_path={}\nconcurrent_downloads={}\ntemp_name_strategy={}\n",
+            save_path, concurrent_downloads, strategy_str
         );
         let _ = std::fs::write(CONFIG_FILE, content);
     }
@@ -56,6 +67,7 @@ pub struct M3u8App {
 
     // 配置
     concurrent_downloads: usize,
+    temp_name_strategy: TempNameStrategy,
 
     // 运行时
     runtime: tokio::runtime::Runtime,
@@ -79,6 +91,7 @@ impl M3u8App {
         let config = AppConfig::default();
         let mut save_path = config.save_path.to_string_lossy().to_string();
         let mut concurrent = config.concurrent_downloads;
+        let mut strategy = config.temp_name_strategy;
 
         let gui_config = GuiConfig::load();
         if let Some(p) = gui_config.save_path {
@@ -87,12 +100,16 @@ impl M3u8App {
         if let Some(c) = gui_config.concurrent_downloads {
             concurrent = c;
         }
+        if let Some(s) = gui_config.temp_name_strategy {
+            strategy = s;
+        }
 
         Self {
             url_input: String::new(),
             output_filename: "output.mp4".to_string(),
             save_path,
             concurrent_downloads: concurrent,
+            temp_name_strategy: strategy,
             runtime: tokio::runtime::Runtime::new().unwrap(),
             active_task: None,
             progress_tracker: None,
@@ -123,6 +140,7 @@ impl M3u8App {
         let mut config = AppConfig::default();
         config.save_path = PathBuf::from(&self.save_path);
         config.concurrent_downloads = self.concurrent_downloads;
+        config.temp_name_strategy = self.temp_name_strategy;
         config.temp_dir = config.save_path.join("./");
 
         let url = self.url_input.trim().to_string();
@@ -364,7 +382,11 @@ impl eframe::App for M3u8App {
                             .desired_width(ui.available_width() - 100.0)
                             .margin(egui::Margin::symmetric(10, 8));
                         if ui.add(path_edit).changed() {
-                            GuiConfig::save(&self.save_path, self.concurrent_downloads);
+                            GuiConfig::save(
+                                &self.save_path,
+                                self.concurrent_downloads,
+                                self.temp_name_strategy,
+                            );
                         }
                         if ui
                             .button(egui::RichText::new("浏览...").size(13.0))
@@ -375,7 +397,11 @@ impl eframe::App for M3u8App {
                                 .pick_folder()
                             {
                                 self.save_path = folder.display().to_string();
-                                GuiConfig::save(&self.save_path, self.concurrent_downloads);
+                                GuiConfig::save(
+                                    &self.save_path,
+                                    self.concurrent_downloads,
+                                    self.temp_name_strategy,
+                                );
                             }
                         }
                     });
@@ -401,9 +427,44 @@ impl eframe::App for M3u8App {
                     .text("线程");
                 if ui.add(slider).changed() {
                     self.concurrent_downloads = concurrent as usize;
-                    GuiConfig::save(&self.save_path, self.concurrent_downloads);
+                    GuiConfig::save(
+                        &self.save_path,
+                        self.concurrent_downloads,
+                        self.temp_name_strategy,
+                    );
                 }
                 self.concurrent_downloads = concurrent as usize;
+                ui.add_space(12.0);
+            });
+
+            ui.add_space(12.0);
+
+            // --- 临时文件名设置 ---
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new("📂 临时文件名")
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(180, 180, 195)),
+                );
+                ui.add_space(8.0);
+                let res1 = ui.radio_value(
+                    &mut self.temp_name_strategy,
+                    TempNameStrategy::Filename,
+                    "m3u8文件名",
+                );
+                let res2 = ui.radio_value(
+                    &mut self.temp_name_strategy,
+                    TempNameStrategy::ContentHash,
+                    "m3u8内容哈希",
+                );
+                if res1.changed() || res2.changed() {
+                    GuiConfig::save(
+                        &self.save_path,
+                        self.concurrent_downloads,
+                        self.temp_name_strategy,
+                    );
+                }
                 ui.add_space(12.0);
             });
 
@@ -515,7 +576,7 @@ fn render_progress(ui: &mut egui::Ui, progress: &DownloadProgress) {
                     if let Some(eta) = progress.eta_seconds {
                         extras.push(format!("剩余时间: {}", format_duration(eta as f64)));
                     }
-                    extras.push(format!("   "));
+                    extras.push(format!("......"));
 
                     if !extras.is_empty() {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
