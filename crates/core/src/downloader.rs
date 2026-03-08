@@ -62,7 +62,7 @@ pub struct DownloadProgress {
 #[derive(Clone)]
 pub struct DownloadTask {
     /// 任务 ID (M3U8 内容的 Hash)
-    pub task_id: String,
+    pub task_id: Arc<std::sync::Mutex<String>>,
     /// M3U8 URL
     pub url: String,
     /// 配置
@@ -78,10 +78,10 @@ pub struct DownloadTask {
 impl DownloadTask {
     /// 创建新的下载任务
     pub fn new(url: String, config: AppConfig, output_filename: String) -> Self {
-        let task_id = "pending".to_string();
+        let task_id = Arc::new(std::sync::Mutex::new("pending".to_string()));
         let progress = Arc::new(std::sync::Mutex::new(DownloadProgress {
             status: TaskStatus::Pending,
-            task_id: task_id.clone(),
+            task_id: "pending".to_string(),
             output_path: None,
         }));
         Self {
@@ -109,7 +109,7 @@ impl DownloadTask {
     pub fn set_status(&self, status: TaskStatus) {
         let mut prog = self.progress.lock().unwrap();
         prog.status = status;
-        prog.task_id = self.task_id.clone();
+        prog.task_id = self.task_id.lock().unwrap().clone();
     }
 
     /// 获取当前进度
@@ -118,7 +118,7 @@ impl DownloadTask {
     }
 
     /// 执行下载任务（完整流程）
-    pub async fn run(&mut self) -> Result<PathBuf, DownloadError> {
+    pub async fn run(&self) -> Result<PathBuf, DownloadError> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
@@ -132,12 +132,24 @@ impl DownloadTask {
         let mut hasher = Sha256::new();
         hasher.update(raw_content.as_bytes());
         let hash = hex::encode(hasher.finalize());
-        self.task_id = hash[..12].to_string();
+        let task_id = hash[..12].to_string();
+        {
+            let mut id_guard = self.task_id.lock().unwrap();
+            *id_guard = task_id.clone();
+        }
+        // 同步更新进度中的 task_id
+        {
+            let mut prog = self.progress.lock().unwrap();
+            prog.task_id = task_id;
+        }
 
         let total_segments = playlist.segments.len();
 
         // 创建临时目录
-        let temp_dir = self.config.temp_dir.join(&self.task_id);
+        let temp_dir = {
+            let id = self.task_id.lock().unwrap();
+            self.config.temp_dir.join(id.as_str())
+        };
         fs::create_dir_all(&temp_dir).await?;
 
         // === 2. 获取所有 Key ===
@@ -145,6 +157,7 @@ impl DownloadTask {
 
         // === 3. 并发下载分片 ===
         if self.is_cancelled() {
+            let _ = fs::remove_dir_all(&temp_dir).await;
             self.set_status(TaskStatus::Cancelled);
             return Err(DownloadError::Cancelled);
         }
@@ -228,7 +241,7 @@ impl DownloadTask {
                                     completed: done,
                                     total: total_segments,
                                 };
-                                prog.task_id = task_id_ref.clone();
+                                prog.task_id = task_id_ref.lock().unwrap().clone();
                                 return;
                             }
                             Err(e) => {

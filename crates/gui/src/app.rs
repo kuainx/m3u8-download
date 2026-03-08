@@ -3,7 +3,42 @@ use m3u8_downloader_core::downloader::{DownloadProgress, DownloadTask, TaskStatu
 use m3u8_downloader_core::AppConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+
+const CONFIG_FILE: &str = "m3u8_dl.cfg";
+
+#[derive(Default)]
+struct GuiConfig {
+    pub save_path: Option<String>,
+    pub concurrent_downloads: Option<usize>,
+}
+
+impl GuiConfig {
+    fn load() -> Self {
+        let mut config = GuiConfig::default();
+        if let Ok(content) = std::fs::read_to_string(CONFIG_FILE) {
+            for line in content.lines() {
+                if let Some((k, v)) = line.split_once('=') {
+                    match k.trim() {
+                        "save_path" => config.save_path = Some(v.trim().to_string()),
+                        "concurrent_downloads" => {
+                            config.concurrent_downloads = v.trim().parse().ok()
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        config
+    }
+
+    fn save(save_path: &str, concurrent_downloads: usize) {
+        let content = format!(
+            "save_path={}\nconcurrent_downloads={}\n",
+            save_path, concurrent_downloads
+        );
+        let _ = std::fs::write(CONFIG_FILE, content);
+    }
+}
 
 /// 日志条目
 struct LogEntry {
@@ -26,7 +61,7 @@ pub struct M3u8App {
     runtime: tokio::runtime::Runtime,
 
     // 任务状态
-    active_task: Option<Arc<Mutex<DownloadTask>>>,
+    active_task: Option<Arc<DownloadTask>>,
     progress_tracker: Option<Arc<std::sync::Mutex<DownloadProgress>>>,
     last_progress: Option<DownloadProgress>,
 
@@ -42,8 +77,16 @@ impl M3u8App {
         configure_style(&cc.egui_ctx);
 
         let config = AppConfig::default();
-        let save_path = config.save_path.to_string_lossy().to_string();
-        let concurrent = config.concurrent_downloads;
+        let mut save_path = config.save_path.to_string_lossy().to_string();
+        let mut concurrent = config.concurrent_downloads;
+
+        let gui_config = GuiConfig::load();
+        if let Some(p) = gui_config.save_path {
+            save_path = p;
+        }
+        if let Some(c) = gui_config.concurrent_downloads {
+            concurrent = c;
+        }
 
         Self {
             url_input: String::new(),
@@ -89,9 +132,8 @@ impl M3u8App {
             self.output_filename.trim().to_string()
         };
 
-        let task_arc = DownloadTask::new(url.clone(), config, filename);
+        let task_arc = Arc::new(DownloadTask::new(url.clone(), config, filename));
         let progress_arc = task_arc.progress.clone();
-        let task_arc = Arc::new(Mutex::new(task_arc));
 
         self.active_task = Some(task_arc.clone());
         self.progress_tracker = Some(progress_arc);
@@ -100,10 +142,7 @@ impl M3u8App {
 
         // 在后台运行下载任务
         self.runtime.spawn(async move {
-            let res = {
-                let mut t = task_arc.lock().await;
-                t.run().await
-            };
+            let res = task_arc.run().await;
 
             match res {
                 Ok(path) => {
@@ -121,11 +160,7 @@ impl M3u8App {
 
     fn cancel_download(&mut self) {
         if let Some(ref task) = self.active_task {
-            let task = task.clone();
-            self.runtime.spawn(async move {
-                let t = task.lock().await;
-                t.cancel();
-            });
+            task.cancel();
             self.add_log("⏹ 已取消下载任务".into(), false);
         }
     }
@@ -328,7 +363,9 @@ impl eframe::App for M3u8App {
                         let path_edit = egui::TextEdit::singleline(&mut self.save_path)
                             .desired_width(ui.available_width() - 100.0)
                             .margin(egui::Margin::symmetric(10, 8));
-                        ui.add(path_edit);
+                        if ui.add(path_edit).changed() {
+                            GuiConfig::save(&self.save_path, self.concurrent_downloads);
+                        }
                         if ui
                             .button(egui::RichText::new("浏览...").size(13.0))
                             .clicked()
@@ -338,6 +375,7 @@ impl eframe::App for M3u8App {
                                 .pick_folder()
                             {
                                 self.save_path = folder.display().to_string();
+                                GuiConfig::save(&self.save_path, self.concurrent_downloads);
                             }
                         }
                     });
@@ -361,7 +399,10 @@ impl eframe::App for M3u8App {
                 let slider = egui::Slider::new(&mut concurrent, 1.0..=64.0)
                     .step_by(1.0)
                     .text("线程");
-                ui.add(slider);
+                if ui.add(slider).changed() {
+                    self.concurrent_downloads = concurrent as usize;
+                    GuiConfig::save(&self.save_path, self.concurrent_downloads);
+                }
                 self.concurrent_downloads = concurrent as usize;
                 ui.add_space(12.0);
             });
