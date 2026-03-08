@@ -3,6 +3,7 @@ use m3u8_downloader_core::downloader::{DownloadProgress, DownloadTask, TaskStatu
 use m3u8_downloader_core::{AppConfig, TempNameStrategy};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 const CONFIG_FILE: &str = "m3u8_dl.cfg";
 
@@ -79,6 +80,7 @@ pub struct M3u8App {
 
     // 日志
     logs: Vec<LogEntry>,
+    log_receiver: Option<mpsc::UnboundedReceiver<String>>,
 }
 
 impl M3u8App {
@@ -115,6 +117,7 @@ impl M3u8App {
             progress_tracker: None,
             last_progress: None,
             logs: Vec::new(),
+            log_receiver: None,
         }
     }
 
@@ -125,9 +128,9 @@ impl M3u8App {
             message,
             is_error,
         });
-        // 保留最近 200 条日志
-        if self.logs.len() > 200 {
-            self.logs.drain(0..self.logs.len() - 200);
+        // 保留最近 500 条日志
+        if self.logs.len() > 500 {
+            self.logs.drain(0..self.logs.len() - 500);
         }
     }
 
@@ -153,6 +156,9 @@ impl M3u8App {
         let task_arc = Arc::new(DownloadTask::new(url.clone(), config, filename));
         let progress_arc = task_arc.progress.clone();
 
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.log_receiver = Some(rx);
+
         self.active_task = Some(task_arc.clone());
         self.progress_tracker = Some(progress_arc);
 
@@ -160,6 +166,7 @@ impl M3u8App {
 
         // 在后台运行下载任务
         self.runtime.spawn(async move {
+            task_arc.set_log_sender(tx).await;
             let res = task_arc.run().await;
 
             match res {
@@ -183,7 +190,19 @@ impl M3u8App {
         }
     }
 
+    fn handle_ffmpeg_logs(&mut self) {
+        if let Some(mut rx) = self.log_receiver.take() {
+            while let Ok(msg) = rx.try_recv() {
+                self.add_log(msg, false);
+            }
+            self.log_receiver = Some(rx);
+        }
+    }
+
     fn poll_progress(&mut self) {
+        // 处理 ffmpeg 日志
+        self.handle_ffmpeg_logs();
+
         let progress = if let Some(ref tracker) = self.progress_tracker {
             if let Ok(prog_guard) = tracker.try_lock() {
                 Some(prog_guard.clone())
@@ -408,7 +427,6 @@ impl eframe::App for M3u8App {
                             } else {
                                 std::env::current_dir().unwrap_or_default().join(path)
                             };
-                            println!("final_path: {}", final_path.display());
 
                             let _ = std::process::Command::new("explorer")
                                 .arg(final_path)

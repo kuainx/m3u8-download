@@ -14,7 +14,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 /// 下载错误类型
 #[derive(Debug, Error)]
@@ -80,6 +80,8 @@ pub struct DownloadTask {
     pub cancelled: Arc<std::sync::atomic::AtomicBool>,
     /// 输出文件名
     pub output_filename: String,
+    /// 日志发送器
+    pub log_sender: Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
 }
 
 impl DownloadTask {
@@ -101,7 +103,14 @@ impl DownloadTask {
             progress,
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             output_filename,
+            log_sender: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// 设置日志发送器
+    pub async fn set_log_sender(&self, sender: mpsc::UnboundedSender<String>) {
+        let mut guard = self.log_sender.lock().await;
+        *guard = Some(sender);
     }
 
     /// 取消任务
@@ -401,7 +410,12 @@ impl DownloadTask {
             fs::create_dir_all(parent).await?;
         }
 
-        merger::merge_segments(&temp_dir, &output_path, total_segments).await?;
+        let log_sender = {
+            let guard = self.log_sender.lock().await;
+            guard.clone()
+        };
+
+        merger::merge_segments(&temp_dir, &output_path, total_segments, log_sender).await?;
 
         // 清理临时文件
         let _ = merger::cleanup_temp(&temp_dir).await;

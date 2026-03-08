@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use thiserror::Error;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Error)]
 pub enum MergeError {
@@ -57,6 +59,7 @@ pub async fn merge_segments(
     temp_dir: &Path,
     output_path: &Path,
     segment_count: usize,
+    log_sender: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<(), MergeError> {
     if segment_count == 0 {
         return Err(MergeError::NoSegments);
@@ -84,8 +87,8 @@ pub async fn merge_segments(
 
     let ffmpeg_path = find_ffmpeg();
 
-    let status = Command::new(&ffmpeg_path)
-        .current_dir(temp_dir)
+    let mut cmd = Command::new(&ffmpeg_path);
+    cmd.current_dir(temp_dir)
         .arg("-y") // 覆盖输出文件
         .arg("-f")
         .arg("concat")
@@ -98,8 +101,30 @@ pub async fn merge_segments(
         .arg("-c")
         .arg("copy")
         .arg(&abs_output_path)
-        .status()
-        .await?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        // 0x08000000 是 CREATE_NO_WINDOW 标志，防止在 Windows 上弹出命令行窗口
+        cmd.creation_flags(0x08000000);
+    }
+
+    let mut child = cmd.spawn()?;
+
+    let stderr = child.stderr.take().expect("Failed to open stderr");
+    let sender = log_sender.clone();
+
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if let Some(ref s) = sender {
+                let _ = s.send(format!("[FFmpeg] {}", line));
+            }
+        }
+    });
+
+    let status = child.wait().await?;
 
     if status.success() {
         Ok(())
