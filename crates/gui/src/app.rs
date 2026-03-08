@@ -27,6 +27,7 @@ pub struct M3u8App {
 
     // 任务状态
     active_task: Option<Arc<Mutex<DownloadTask>>>,
+    progress_tracker: Option<Arc<std::sync::Mutex<DownloadProgress>>>,
     last_progress: Option<DownloadProgress>,
 
     // 日志
@@ -35,6 +36,8 @@ pub struct M3u8App {
 
 impl M3u8App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // 加载中文字体
+        configure_fonts(&cc.egui_ctx);
         // 设置深色主题 + 现代化样式
         configure_style(&cc.egui_ctx);
 
@@ -44,11 +47,12 @@ impl M3u8App {
 
         Self {
             url_input: String::new(),
-            output_filename: "output.ts".to_string(),
+            output_filename: "output.mp4".to_string(),
             save_path,
             concurrent_downloads: concurrent,
             runtime: tokio::runtime::Runtime::new().unwrap(),
             active_task: None,
+            progress_tracker: None,
             last_progress: None,
             logs: Vec::new(),
         }
@@ -76,7 +80,7 @@ impl M3u8App {
         let mut config = AppConfig::default();
         config.save_path = PathBuf::from(&self.save_path);
         config.concurrent_downloads = self.concurrent_downloads;
-        config.temp_dir = config.save_path.join(".m3u8_temp");
+        config.temp_dir = config.save_path.join("./");
 
         let url = self.url_input.trim().to_string();
         let filename = if self.output_filename.trim().is_empty() {
@@ -85,22 +89,31 @@ impl M3u8App {
             self.output_filename.trim().to_string()
         };
 
-        let task = DownloadTask::new(url.clone(), config, filename);
-        let task = Arc::new(Mutex::new(task));
-        self.active_task = Some(task.clone());
+        let task_arc = DownloadTask::new(url.clone(), config, filename);
+        let progress_arc = task_arc.progress.clone();
+        let task_arc = Arc::new(Mutex::new(task_arc));
+
+        self.active_task = Some(task_arc.clone());
+        self.progress_tracker = Some(progress_arc);
 
         self.add_log(format!("▶ 开始下载: {}", &url), false);
 
         // 在后台运行下载任务
         self.runtime.spawn(async move {
-            let mut t = task.lock().await;
-            match t.run().await {
+            let res = {
+                let mut t = task_arc.lock().await;
+                t.run().await
+            };
+
+            match res {
                 Ok(path) => {
                     eprintln!("✅ 下载完成: {}", path.display());
                 }
                 Err(e) => {
                     eprintln!("❌ 下载失败: {}", e);
-                    t.set_status(TaskStatus::Failed(e.to_string())).await;
+                    // 注意：这里我们不再需要锁定整个 task 来记录失败，
+                    // 因为 DownloadTask::run 内部已经在出错时尝试处理状态了。
+                    // 如果 run 因重试用尽或其他原因退出，我们可以通过进度对象更新状态。
                 }
             }
         });
@@ -118,14 +131,17 @@ impl M3u8App {
     }
 
     fn poll_progress(&mut self) {
-        if let Some(ref task) = self.active_task {
-            let task = task.clone();
-            // 使用 block_on 快速读取进度
-            let progress = self.runtime.block_on(async {
-                let t = task.lock().await;
-                t.get_progress().await
-            });
+        let progress = if let Some(ref tracker) = self.progress_tracker {
+            if let Ok(prog_guard) = tracker.try_lock() {
+                Some(prog_guard.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
+        if let Some(progress) = progress {
             // 状态变化时写日志
             let status_changed = match (&self.last_progress, &progress.status) {
                 (Some(old), new) => {
@@ -269,7 +285,12 @@ impl eframe::App for M3u8App {
                     .desired_width(ui.available_width() - 24.0)
                     .font(egui::TextStyle::Body)
                     .margin(egui::Margin::symmetric(10, 8));
-                ui.add(text_edit);
+                let response = ui.add(text_edit);
+                if response.changed() {
+                    if let Some(filename) = extract_filename_from_url(&self.url_input) {
+                        self.output_filename = filename;
+                    }
+                }
                 ui.add_space(12.0);
             });
 
@@ -488,6 +509,36 @@ fn render_progress(ui: &mut egui::Ui, progress: &DownloadProgress) {
     });
 }
 
+/// 配置中文字体
+fn configure_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    // 加载系统中文字体（微软雅黑）
+    let font_path = std::path::Path::new("C:\\Windows\\Fonts\\msyh.ttc");
+    if font_path.exists() {
+        if let Ok(font_data) = std::fs::read(font_path) {
+            fonts.font_data.insert(
+                "msyh".to_owned(),
+                egui::FontData::from_owned(font_data).into(),
+            );
+
+            // 将中文字体插入到 Proportional 和 Monospace 的首位
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "msyh".to_owned());
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .push("msyh".to_owned());
+        }
+    }
+
+    ctx.set_fonts(fonts);
+}
+
 /// 配置深色主题现代化样式
 fn configure_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
@@ -535,4 +586,29 @@ fn chrono_now() -> String {
     let minutes = (secs / 60) % 60;
     let seconds = secs % 60;
     format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
+
+/// 提取 URL 中的文件名
+fn extract_filename_from_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+
+    // 移除 query string 和 fragment
+    let path = url.split('?').next().unwrap_or(url);
+    let path = path.split('#').next().unwrap_or(path);
+
+    // 获取最后一段作为文件名
+    let last_segment = path.split('/').last().unwrap_or("");
+    if last_segment.is_empty() {
+        return None;
+    }
+
+    // 如果是 .m3u8 结尾，则替换为 .mp4
+    let mut filename = last_segment.to_string();
+    if filename.ends_with(".m3u8") {
+        filename = filename.replace(".m3u8", ".mp4");
+    }
+    Some(filename)
 }

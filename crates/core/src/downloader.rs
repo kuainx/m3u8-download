@@ -68,7 +68,7 @@ pub struct DownloadTask {
     /// 配置
     pub config: AppConfig,
     /// 进度信息（共享）
-    pub progress: Arc<Mutex<DownloadProgress>>,
+    pub progress: Arc<std::sync::Mutex<DownloadProgress>>,
     /// 取消标志
     pub cancelled: Arc<std::sync::atomic::AtomicBool>,
     /// 输出文件名
@@ -79,7 +79,7 @@ impl DownloadTask {
     /// 创建新的下载任务
     pub fn new(url: String, config: AppConfig, output_filename: String) -> Self {
         let task_id = "pending".to_string();
-        let progress = Arc::new(Mutex::new(DownloadProgress {
+        let progress = Arc::new(std::sync::Mutex::new(DownloadProgress {
             status: TaskStatus::Pending,
             task_id: task_id.clone(),
             output_path: None,
@@ -106,15 +106,15 @@ impl DownloadTask {
     }
 
     /// 更新进度
-    pub async fn set_status(&self, status: TaskStatus) {
-        let mut prog = self.progress.lock().await;
+    pub fn set_status(&self, status: TaskStatus) {
+        let mut prog = self.progress.lock().unwrap();
         prog.status = status;
         prog.task_id = self.task_id.clone();
     }
 
     /// 获取当前进度
-    pub async fn get_progress(&self) -> DownloadProgress {
-        self.progress.lock().await.clone()
+    pub fn get_progress(&self) -> DownloadProgress {
+        self.progress.lock().unwrap().clone()
     }
 
     /// 执行下载任务（完整流程）
@@ -124,7 +124,7 @@ impl DownloadTask {
             .build()?;
 
         // === 1. 解析 M3U8 ===
-        self.set_status(TaskStatus::Parsing).await;
+        self.set_status(TaskStatus::Parsing);
 
         let (playlist, raw_content) = parser::fetch_and_parse(&client, &self.url).await?;
 
@@ -145,15 +145,14 @@ impl DownloadTask {
 
         // === 3. 并发下载分片 ===
         if self.is_cancelled() {
-            self.set_status(TaskStatus::Cancelled).await;
+            self.set_status(TaskStatus::Cancelled);
             return Err(DownloadError::Cancelled);
         }
 
         self.set_status(TaskStatus::Downloading {
             completed: 0,
             total: total_segments,
-        })
-        .await;
+        });
 
         let completed_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -174,8 +173,7 @@ impl DownloadTask {
             self.set_status(TaskStatus::Downloading {
                 completed: initial_completed,
                 total: total_segments,
-            })
-            .await;
+            });
         }
 
         let segments: Vec<(usize, Segment)> = playlist.segments.into_iter().enumerate().collect();
@@ -225,7 +223,7 @@ impl DownloadTask {
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                                     + 1;
                                 // 更新进度
-                                let mut prog = progress_ref.lock().await;
+                                let mut prog = progress_ref.lock().unwrap();
                                 prog.status = TaskStatus::Downloading {
                                     completed: done,
                                     total: total_segments,
@@ -255,12 +253,12 @@ impl DownloadTask {
             .await;
 
         if self.is_cancelled() {
-            self.set_status(TaskStatus::Cancelled).await;
+            self.set_status(TaskStatus::Cancelled);
             return Err(DownloadError::Cancelled);
         }
 
         // === 4. 合并分片 ===
-        self.set_status(TaskStatus::Merging).await;
+        self.set_status(TaskStatus::Merging);
 
         let output_path = self.config.save_path.join(&self.output_filename);
 
@@ -276,7 +274,7 @@ impl DownloadTask {
 
         // 更新完成状态
         {
-            let mut prog = self.progress.lock().await;
+            let mut prog = self.progress.lock().unwrap();
             prog.status = TaskStatus::Completed;
             prog.output_path = Some(output_path.clone());
         }

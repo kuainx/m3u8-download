@@ -44,17 +44,5 @@ impl AppConfig {
 }
 
 fn dirs_default_download() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(profile) = std::env::var("USERPROFILE") {
-            return PathBuf::from(profile).join("Downloads");
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join("Downloads");
-        }
-    }
-    PathBuf::from(".")
+    PathBuf::from("./.m3u8_download")
 }

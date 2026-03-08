@@ -39,8 +39,11 @@ m3u8-download/
 ### 环境要求
 
 - [Rust](https://rustup.rs/) 1.70+
+- [FFmpeg](https://ffmpeg.org/download.html) 4.4+
 
 ### 运行
+
+- 将ffmpeg.exe放在运行目录下
 
 ```powershell
 cargo run -p m3u8-downloader-gui --release
@@ -50,7 +53,7 @@ cargo run -p m3u8-downloader-gui --release
 
 1. 输入 M3U8 播放列表的 URL
 2. 设置输出文件名和保存路径
-3. 调整并发下载数（默认 16 线程）
+3. 调整并发下载数（默认 4 线程）
 4. 点击 **开始下载**
 
 ## 技术栈
@@ -64,6 +67,7 @@ cargo run -p m3u8-downloader-gui --release
 | M3U8 解析  | m3u8-rs            |
 | 解密       | aes + cbc          |
 | 文件选择   | rfd                |
+| 文件合并   | ffmpeg           |
 
 ## License
 
