@@ -127,7 +127,7 @@ impl M3u8App {
 
         let url = self.url_input.trim().to_string();
         let filename = if self.output_filename.trim().is_empty() {
-            "output.ts".to_string()
+            "output.mp4".to_string()
         } else {
             self.output_filename.trim().to_string()
         };

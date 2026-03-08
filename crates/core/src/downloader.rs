@@ -3,6 +3,10 @@ use crate::crypto;
 use crate::merger;
 use crate::parser::{self, Segment};
 use futures::stream::{self, StreamExt};
+use reqwest::header::{
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONNECTION, UPGRADE_INSECURE_REQUESTS,
+    USER_AGENT,
+};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -98,6 +102,7 @@ impl DownloadTask {
     pub fn cancel(&self) {
         self.cancelled
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.set_status(TaskStatus::Cancelled);
     }
 
     /// 是否已取消
@@ -108,6 +113,13 @@ impl DownloadTask {
     /// 更新进度
     pub fn set_status(&self, status: TaskStatus) {
         let mut prog = self.progress.lock().unwrap();
+        // 如果已经是完成、取消或失败状态，则不再更新（避免后台残留任务覆盖最终状态）
+        if matches!(
+            prog.status,
+            TaskStatus::Completed | TaskStatus::Cancelled | TaskStatus::Failed(_)
+        ) {
+            return;
+        }
         prog.status = status;
         prog.task_id = self.task_id.lock().unwrap().clone();
     }
@@ -119,8 +131,32 @@ impl DownloadTask {
 
     /// 执行下载任务（完整流程）
     pub async fn run(&self) -> Result<PathBuf, DownloadError> {
+        match self.run_inner().await {
+            Ok(path) => Ok(path),
+            Err(e) => {
+                if !matches!(e, DownloadError::Cancelled) {
+                    self.set_status(TaskStatus::Failed(e.to_string()));
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// 内部执行逻辑
+    async fn run_inner(&self) -> Result<PathBuf, DownloadError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"));
+        headers.insert(ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"));
+        headers.insert(
+            ACCEPT_LANGUAGE,
+            HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"),
+        );
+        headers.insert(CONNECTION, HeaderValue::from_static("keep-alive"));
+        headers.insert(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"));
+
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
+            .default_headers(headers)
             .build()?;
 
         // === 1. 解析 M3U8 ===
@@ -195,6 +231,7 @@ impl DownloadTask {
         let task_id_ref = self.task_id.clone();
         let cancelled_ref = self.cancelled.clone();
         let max_retries = self.config.max_retries;
+        let has_error = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         stream::iter(segments)
             .for_each_concurrent(self.config.concurrent_downloads, |(i, segment)| {
@@ -205,10 +242,13 @@ impl DownloadTask {
                 let progress_ref = progress_ref.clone();
                 let task_id_ref = task_id_ref.clone();
                 let cancelled_ref = cancelled_ref.clone();
+                let has_error = has_error.clone();
 
                 async move {
-                    // 检查是否已取消
-                    if cancelled_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                    // 检查是否已取消或出错
+                    if cancelled_ref.load(std::sync::atomic::Ordering::Relaxed)
+                        || has_error.load(std::sync::atomic::Ordering::Relaxed)
+                    {
                         return;
                     }
 
@@ -237,11 +277,19 @@ impl DownloadTask {
                                     + 1;
                                 // 更新进度
                                 let mut prog = progress_ref.lock().unwrap();
-                                prog.status = TaskStatus::Downloading {
-                                    completed: done,
-                                    total: total_segments,
-                                };
-                                prog.task_id = task_id_ref.lock().unwrap().clone();
+                                // 这里手动更新也是为了效率，但也得检查状态
+                                if !matches!(
+                                    prog.status,
+                                    TaskStatus::Completed
+                                        | TaskStatus::Cancelled
+                                        | TaskStatus::Failed(_)
+                                ) {
+                                    prog.status = TaskStatus::Downloading {
+                                        completed: done,
+                                        total: total_segments,
+                                    };
+                                    prog.task_id = task_id_ref.lock().unwrap().clone();
+                                }
                                 return;
                             }
                             Err(e) => {
@@ -261,6 +309,7 @@ impl DownloadTask {
                         "分片 {} 下载失败 (已重试 {} 次): {}",
                         i, max_retries, last_err
                     );
+                    has_error.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             })
             .await;
@@ -268,6 +317,12 @@ impl DownloadTask {
         if self.is_cancelled() {
             self.set_status(TaskStatus::Cancelled);
             return Err(DownloadError::Cancelled);
+        }
+
+        if has_error.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(DownloadError::MaxRetriesExceeded(
+                "部分分片下载失败".to_string(),
+            ));
         }
 
         // === 4. 合并分片 ===
