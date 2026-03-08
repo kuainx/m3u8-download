@@ -60,6 +60,9 @@ pub struct DownloadProgress {
     pub status: TaskStatus,
     pub task_id: String,
     pub output_path: Option<PathBuf>,
+    pub estimated_total_size: Option<u64>,
+    pub estimated_total_duration: Option<f64>,
+    pub eta_seconds: Option<u64>,
 }
 
 /// 一个完整的下载任务
@@ -87,6 +90,9 @@ impl DownloadTask {
             status: TaskStatus::Pending,
             task_id: "pending".to_string(),
             output_path: None,
+            estimated_total_size: None,
+            estimated_total_duration: None,
+            eta_seconds: None,
         }));
         Self {
             task_id,
@@ -180,6 +186,13 @@ impl DownloadTask {
         }
 
         let total_segments = playlist.segments.len();
+        let total_duration: f64 = playlist.segments.iter().map(|s| s.duration).sum();
+
+        // 更新预估时长
+        {
+            let mut prog = self.progress.lock().unwrap();
+            prog.estimated_total_duration = Some(total_duration);
+        }
 
         // 创建临时目录
         let temp_dir = {
@@ -205,6 +218,33 @@ impl DownloadTask {
 
         let completed_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+        // === 预估文件大小：下载第一个分片并计算 ===
+        if total_segments > 0 {
+            let first_seg = &playlist.segments[0];
+            let first_seg_path = merger::segment_path(&temp_dir, 0);
+
+            let mut need_download = true;
+            if first_seg_path.exists() {
+                if let Ok(meta) = fs::metadata(&first_seg_path).await {
+                    if meta.len() > 0 {
+                        need_download = false;
+                    }
+                }
+            }
+
+            if need_download {
+                download_segment(&client, first_seg, &first_seg_path, &key_cache).await?;
+            }
+
+            // 获取第一个分片的大小并预估总大小
+            if let Ok(meta) = fs::metadata(&first_seg_path).await {
+                let first_size = meta.len();
+                let estimated_size = first_size * total_segments as u64;
+                let mut prog = self.progress.lock().unwrap();
+                prog.estimated_total_size = Some(estimated_size);
+            }
+        }
+
         // 检查断点续传：已有的分片
         for i in 0..total_segments {
             let seg_path = merger::segment_path(&temp_dir, i);
@@ -224,6 +264,9 @@ impl DownloadTask {
                 total: total_segments,
             });
         }
+
+        let start_time = std::time::Instant::now();
+        let initial_count = initial_completed;
 
         let segments: Vec<(usize, Segment)> = playlist.segments.into_iter().enumerate().collect();
 
@@ -289,6 +332,15 @@ impl DownloadTask {
                                         total: total_segments,
                                     };
                                     prog.task_id = task_id_ref.lock().unwrap().clone();
+
+                                    // 计算 ETA
+                                    let elapsed = start_time.elapsed().as_secs_f64();
+                                    let newly_completed = done.saturating_sub(initial_count);
+                                    if elapsed > 1.0 && newly_completed > 0 {
+                                        let speed = newly_completed as f64 / elapsed; // segments per second
+                                        let remaining = total_segments.saturating_sub(done);
+                                        prog.eta_seconds = Some((remaining as f64 / speed) as u64);
+                                    }
                                 }
                                 return;
                             }

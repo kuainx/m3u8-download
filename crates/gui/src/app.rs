@@ -504,6 +504,28 @@ fn render_progress(ui: &mut egui::Ui, progress: &DownloadProgress) {
                         .size(14.0)
                         .color(egui::Color32::from_rgb(100, 220, 150)),
                     );
+
+                    let mut extras = Vec::new();
+                    if let Some(size) = progress.estimated_total_size {
+                        extras.push(format!("视频大小: {}", format_bytes(size)));
+                    }
+                    if let Some(duration) = progress.estimated_total_duration {
+                        extras.push(format!("视频时长: {}", format_duration(duration)));
+                    }
+                    if let Some(eta) = progress.eta_seconds {
+                        extras.push(format!("剩余时间: {}", format_duration(eta as f64)));
+                    }
+                    extras.push(format!("   "));
+
+                    if !extras.is_empty() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(extras.join("  "))
+                                    .size(12.0)
+                                    .color(egui::Color32::from_rgb(140, 140, 160)),
+                            );
+                        });
+                    }
                 });
 
                 ui.add_space(4.0);
@@ -652,4 +674,33 @@ fn extract_filename_from_url(url: &str) -> Option<String> {
         filename = filename.replace(".m3u8", ".mp4");
     }
     Some(filename)
+}
+
+/// 格式化字节数为人类可读字符串
+fn format_bytes(bytes: u64) -> String {
+    let mut size = bytes as f64;
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < units.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    if unit_idx == 0 {
+        format!("{} {}", size as u64, units[unit_idx])
+    } else {
+        format!("{:.2} {}", size, units[unit_idx])
+    }
+}
+
+/// 格式化秒数为 HH:MM:SS
+fn format_duration(seconds: f64) -> String {
+    let secs = seconds as u64;
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    } else {
+        format!("{:02}:{:02}", minutes, seconds)
+    }
 }

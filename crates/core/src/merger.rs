@@ -113,7 +113,7 @@ pub async fn merge_segments(
 /// 清理临时分片文件
 pub async fn cleanup_temp(temp_dir: &Path) -> Result<(), MergeError> {
     if temp_dir.exists() {
-        // fs::remove_dir_all(temp_dir).await?;
+        fs::remove_dir_all(temp_dir).await?;
     }
     Ok(())
 }
