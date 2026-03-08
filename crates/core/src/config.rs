@@ -57,5 +57,5 @@ impl AppConfig {
 }
 
 fn dirs_default_download() -> PathBuf {
-    PathBuf::from("./.m3u8_download")
+    PathBuf::from(".m3u8_download")
 }

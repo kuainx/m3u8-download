@@ -379,7 +379,7 @@ impl eframe::App for M3u8App {
                     ui.add_space(2.0);
                     ui.horizontal(|ui| {
                         let path_edit = egui::TextEdit::singleline(&mut self.save_path)
-                            .desired_width(ui.available_width() - 100.0)
+                            .desired_width(ui.available_width() - 125.0)
                             .margin(egui::Margin::symmetric(10, 8));
                         if ui.add(path_edit).changed() {
                             GuiConfig::save(
@@ -388,10 +388,7 @@ impl eframe::App for M3u8App {
                                 self.temp_name_strategy,
                             );
                         }
-                        if ui
-                            .button(egui::RichText::new("浏览...").size(13.0))
-                            .clicked()
-                        {
+                        if ui.button(egui::RichText::new("浏览").size(13.0)).clicked() {
                             if let Some(folder) = rfd::FileDialog::new()
                                 .set_directory(&self.save_path)
                                 .pick_folder()
@@ -403,6 +400,19 @@ impl eframe::App for M3u8App {
                                     self.temp_name_strategy,
                                 );
                             }
+                        }
+                        if ui.button(egui::RichText::new("打开").size(13.0)).clicked() {
+                            let path = std::path::Path::new(&self.save_path);
+                            let final_path = if path.is_absolute() {
+                                path.to_path_buf()
+                            } else {
+                                std::env::current_dir().unwrap_or_default().join(path)
+                            };
+                            println!("final_path: {}", final_path.display());
+
+                            let _ = std::process::Command::new("explorer")
+                                .arg(final_path)
+                                .spawn();
                         }
                     });
                 });
@@ -518,11 +528,8 @@ impl eframe::App for M3u8App {
 
             // --- 进度显示 ---
             if let Some(ref progress) = self.last_progress {
-                ui.horizontal(|ui| {
-                    ui.add_space(12.0);
-                    render_progress(ui, progress);
-                    ui.add_space(12.0);
-                });
+                ui.add_space(6.0);
+                render_progress(ui, progress);
             }
         });
     }
@@ -531,21 +538,28 @@ impl eframe::App for M3u8App {
 /// 渲染进度信息
 fn render_progress(ui: &mut egui::Ui, progress: &DownloadProgress) {
     ui.vertical(|ui| {
+        ui.add_space(4.0);
         match &progress.status {
             TaskStatus::Pending => {
-                ui.label(
-                    egui::RichText::new("⏳ 等待中...")
-                        .size(14.0)
-                        .color(egui::Color32::from_rgb(180, 180, 195)),
-                );
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("⏳ 等待中...")
+                            .size(14.0)
+                            .color(egui::Color32::from_rgb(180, 180, 195)),
+                    );
+                });
             }
             TaskStatus::Parsing => {
-                ui.label(
-                    egui::RichText::new("🔍 解析 M3U8 播放列表中...")
-                        .size(14.0)
-                        .color(egui::Color32::from_rgb(100, 200, 255)),
-                );
-                ui.add(egui::Spinner::new().size(20.0));
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("🔍 解析 M3U8 播放列表中...")
+                            .size(14.0)
+                            .color(egui::Color32::from_rgb(100, 200, 255)),
+                    );
+                    ui.add(egui::Spinner::new().size(20.0));
+                });
             }
             TaskStatus::Downloading { completed, total } => {
                 let pct = if *total > 0 {
@@ -555,6 +569,7 @@ fn render_progress(ui: &mut egui::Ui, progress: &DownloadProgress) {
                 };
 
                 ui.horizontal(|ui| {
+                    ui.add_space(6.0);
                     ui.label(
                         egui::RichText::new(format!(
                             "⬇ 下载中: {}/{} 分片 ({:.1}%)",
@@ -576,10 +591,10 @@ fn render_progress(ui: &mut egui::Ui, progress: &DownloadProgress) {
                     if let Some(eta) = progress.eta_seconds {
                         extras.push(format!("剩余时间: {}", format_duration(eta as f64)));
                     }
-                    extras.push(format!("......"));
 
                     if !extras.is_empty() {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(18.0);
                             ui.label(
                                 egui::RichText::new(extras.join("  "))
                                     .size(12.0)
@@ -592,16 +607,26 @@ fn render_progress(ui: &mut egui::Ui, progress: &DownloadProgress) {
                 ui.add_space(4.0);
 
                 // 自定义进度条
-                let progress_bar = egui::ProgressBar::new(pct).show_percentage().animate(true);
-                ui.add(progress_bar);
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    let available = ui.available_width() - 18.0;
+                    let progress_bar = egui::ProgressBar::new(pct)
+                        .show_percentage()
+                        .animate(true)
+                        .desired_width(available);
+                    ui.add(progress_bar);
+                });
             }
             TaskStatus::Merging => {
-                ui.label(
-                    egui::RichText::new("🔗 合并分片中...")
-                        .size(14.0)
-                        .color(egui::Color32::from_rgb(255, 200, 100)),
-                );
-                ui.add(egui::Spinner::new().size(20.0));
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("🔗 合并分片中...")
+                            .size(14.0)
+                            .color(egui::Color32::from_rgb(255, 200, 100)),
+                    );
+                    ui.add(egui::Spinner::new().size(20.0));
+                });
             }
             TaskStatus::Completed => {
                 let path_str = progress
@@ -609,25 +634,34 @@ fn render_progress(ui: &mut egui::Ui, progress: &DownloadProgress) {
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
-                ui.label(
-                    egui::RichText::new(format!("✅ 下载完成: {}", path_str))
-                        .size(14.0)
-                        .color(egui::Color32::from_rgb(80, 220, 120)),
-                );
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(format!("✅ 下载完成: {}", path_str))
+                            .size(14.0)
+                            .color(egui::Color32::from_rgb(80, 220, 120)),
+                    );
+                });
             }
             TaskStatus::Failed(err) => {
-                ui.label(
-                    egui::RichText::new(format!("❌ 失败: {}", err))
-                        .size(14.0)
-                        .color(egui::Color32::from_rgb(255, 90, 90)),
-                );
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(format!("❌ 失败: {}", err))
+                            .size(14.0)
+                            .color(egui::Color32::from_rgb(255, 90, 90)),
+                    );
+                });
             }
             TaskStatus::Cancelled => {
-                ui.label(
-                    egui::RichText::new("⏹ 任务已取消")
-                        .size(14.0)
-                        .color(egui::Color32::from_rgb(200, 200, 210)),
-                );
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("⏹ 任务已取消")
+                            .size(14.0)
+                            .color(egui::Color32::from_rgb(200, 200, 210)),
+                    );
+                });
             }
         }
     });
