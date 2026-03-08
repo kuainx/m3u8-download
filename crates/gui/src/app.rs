@@ -1,9 +1,14 @@
 use eframe::egui;
 use m3u8_downloader_core::downloader::{DownloadProgress, DownloadTask, TaskStatus};
 use m3u8_downloader_core::{AppConfig, TempNameStrategy};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::Shell::{
+    ITaskbarList3, TaskbarList, TBPF_ERROR, TBPF_INDETERMINATE, TBPF_NOPROGRESS, TBPF_NORMAL,
+};
 
 const CONFIG_FILE: &str = "m3u8_dl.cfg";
 
@@ -59,6 +64,59 @@ struct LogEntry {
     is_error: bool,
 }
 
+/// 封装任务栏进度管理
+struct TaskbarProgress {
+    taskbar: Option<ITaskbarList3>,
+    hwnd: HWND,
+}
+
+impl TaskbarProgress {
+    fn new(hwnd: HWND) -> Self {
+        let taskbar = unsafe {
+            windows::Win32::System::Com::CoCreateInstance(
+                &TaskbarList,
+                None,
+                windows::Win32::System::Com::CLSCTX_ALL,
+            )
+            .ok()
+        };
+        Self { taskbar, hwnd }
+    }
+
+    fn set_progress(&self, completed: u64, total: u64) {
+        if let Some(ref taskbar) = self.taskbar {
+            unsafe {
+                let _ = taskbar.SetProgressState(self.hwnd, TBPF_NORMAL);
+                let _ = taskbar.SetProgressValue(self.hwnd, completed, total);
+            }
+        }
+    }
+
+    fn set_indeterminate(&self) {
+        if let Some(ref taskbar) = self.taskbar {
+            unsafe {
+                let _ = taskbar.SetProgressState(self.hwnd, TBPF_INDETERMINATE);
+            }
+        }
+    }
+
+    fn set_error(&self) {
+        if let Some(ref taskbar) = self.taskbar {
+            unsafe {
+                let _ = taskbar.SetProgressState(self.hwnd, TBPF_ERROR);
+            }
+        }
+    }
+
+    fn clear(&self) {
+        if let Some(ref taskbar) = self.taskbar {
+            unsafe {
+                let _ = taskbar.SetProgressState(self.hwnd, TBPF_NOPROGRESS);
+            }
+        }
+    }
+}
+
 /// 主应用状态
 pub struct M3u8App {
     // 输入
@@ -81,6 +139,9 @@ pub struct M3u8App {
     // 日志
     logs: Vec<LogEntry>,
     log_receiver: Option<mpsc::UnboundedReceiver<String>>,
+
+    // 平台相关
+    taskbar_progress: Option<TaskbarProgress>,
 }
 
 impl M3u8App {
@@ -118,6 +179,7 @@ impl M3u8App {
             last_progress: None,
             logs: Vec::new(),
             log_receiver: None,
+            taskbar_progress: None,
         }
     }
 
@@ -245,11 +307,40 @@ impl M3u8App {
             }
             self.last_progress = Some(progress);
         }
+
+        // 更新任务栏进度
+        self.update_taskbar();
+    }
+
+    fn update_taskbar(&mut self) {
+        if let Some(ref progress) = self.last_progress {
+            if let Some(ref tp) = self.taskbar_progress {
+                match &progress.status {
+                    TaskStatus::Parsing | TaskStatus::Merging => tp.set_indeterminate(),
+                    TaskStatus::Downloading { completed, total } => {
+                        tp.set_progress(*completed as u64, *total as u64)
+                    }
+                    TaskStatus::Failed(_) => tp.set_error(),
+                    TaskStatus::Completed | TaskStatus::Cancelled => tp.clear(),
+                    _ => tp.clear(),
+                }
+            }
+        }
     }
 }
 
 impl eframe::App for M3u8App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // 初始化任务栏对象（仅一次，需要窗口句柄）
+        if self.taskbar_progress.is_none() {
+            if let Ok(hwnd) = frame.window_handle() {
+                if let RawWindowHandle::Win32(handle) = hwnd.as_raw() {
+                    self.taskbar_progress =
+                        Some(TaskbarProgress::new(HWND(handle.hwnd.get() as *mut _)));
+                }
+            }
+        }
+
         // 轮询进度
         self.poll_progress();
 

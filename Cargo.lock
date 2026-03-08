@@ -2333,8 +2333,10 @@ dependencies = [
  "egui",
  "image",
  "m3u8-downloader-core",
+ "raw-window-handle",
  "rfd",
  "tokio",
+ "windows",
  "winres",
 ]
 
