@@ -696,6 +696,9 @@ fn render_progress(ui: &mut egui::Ui, progress: &DownloadProgress) {
                     }
                     if let Some(duration) = progress.estimated_total_duration {
                         extras.push(format!("视频时长: {}", format_duration(duration)));
+                        if let Some(size) = progress.estimated_total_size {
+                            extras.push(format!("比特率: {}", format_bitrate(size, duration)));
+                        }
                     }
                     if let Some(eta) = progress.eta_seconds {
                         extras.push(format!("剩余时间: {}", format_duration(eta as f64)));
@@ -906,5 +909,20 @@ fn format_duration(seconds: f64) -> String {
         format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
     } else {
         format!("{:02}:{:02}", minutes, seconds)
+    }
+}
+
+/// 格式化比特率为人类可读字符串 (bps, Kbps, Mbps)
+fn format_bitrate(size_bytes: u64, duration_seconds: f64) -> String {
+    if duration_seconds <= 0.0 {
+        return "0 bps".to_string();
+    }
+    let bps = (size_bytes as f64 * 8.0) / duration_seconds;
+    if bps >= 1_000_000.0 {
+        format!("{:.2} Mbps", bps / 1_000_000.0)
+    } else if bps >= 1000.0 {
+        format!("{:.2} Kbps", bps / 1000.0)
+    } else {
+        format!("{:.0} bps", bps)
     }
 }
