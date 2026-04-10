@@ -4,7 +4,7 @@ use crate::merger;
 use crate::parser::{self, Segment};
 use futures::stream::{self, StreamExt};
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONNECTION, UPGRADE_INSECURE_REQUESTS,
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONNECTION, HOST, UPGRADE_INSECURE_REQUESTS,
     USER_AGENT,
 };
 use sha2::{Digest, Sha256};
@@ -33,6 +33,19 @@ pub enum DownloadError {
     Cancelled,
     #[error("下载失败 (重试已用尽): {0}")]
     MaxRetriesExceeded(String),
+}
+
+fn extract_host_header(url: &str) -> Option<HeaderValue> {
+    url::Url::parse(url).ok().and_then(|parsed_url| {
+        parsed_url.host_str().map(|host| {
+            let host_header = if let Some(port) = parsed_url.port() {
+                format!("{}:{}", host, port)
+            } else {
+                host.to_string()
+            };
+            HeaderValue::from_str(&host_header).ok()
+        }).flatten()
+    })
 }
 
 /// 下载状态
@@ -168,6 +181,11 @@ impl DownloadTask {
         );
         headers.insert(CONNECTION, HeaderValue::from_static("keep-alive"));
         headers.insert(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"));
+
+        if let Some(host_value) = extract_host_header(&self.url) {
+            headers.insert(HOST, host_value);
+        }
+
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -439,7 +457,11 @@ async fn download_segment(
     key_cache: &Arc<Mutex<HashMap<String, Vec<u8>>>>,
 ) -> Result<(), DownloadError> {
     // 下载分片数据
-    let response = client.get(&segment.url).send().await?.error_for_status()?;
+    let mut request_builder = client.get(&segment.url);
+    if let Some(host_value) = extract_host_header(&segment.url) {
+        request_builder = request_builder.header(HOST, host_value);
+    }
+    let response = request_builder.send().await?.error_for_status()?;
     let mut data = response.bytes().await?.to_vec();
 
     // 如果有加密，进行解密
@@ -450,7 +472,11 @@ async fn download_segment(
             if let Some(cached_key) = cache.get(&key_info.uri) {
                 cached_key.clone()
             } else {
-                let key_response = client.get(&key_info.uri).send().await?.error_for_status()?;
+                let mut key_request = client.get(&key_info.uri);
+                if let Some(host_value) = extract_host_header(&key_info.uri) {
+                    key_request = key_request.header(HOST, host_value);
+                }
+                let key_response = key_request.send().await?.error_for_status()?;
                 let key_data = key_response.bytes().await?.to_vec();
                 cache.insert(key_info.uri.clone(), key_data.clone());
                 key_data
