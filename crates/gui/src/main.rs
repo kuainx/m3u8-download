@@ -13,8 +13,8 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 620.0])
-            .with_min_inner_size([700.0, 500.0])
+            .with_inner_size([900.0, 900.0])
+            .with_min_inner_size([700.0, 900.0])
             .with_title("M3U8 Downloader")
             .with_icon(IconData {
                 rgba: icon_rgba8,
