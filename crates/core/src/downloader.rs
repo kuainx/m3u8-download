@@ -51,6 +51,15 @@ fn extract_host_header(url: &str) -> Option<HeaderValue> {
     })
 }
 
+fn ensure_mp4_filename(filename: &str) -> String {
+    let filename = filename.trim();
+    if filename.to_ascii_lowercase().ends_with(".mp4") {
+        filename.to_string()
+    } else {
+        format!("{filename}.mp4")
+    }
+}
+
 /// 下载状态
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskStatus {
@@ -430,7 +439,8 @@ impl DownloadTask {
         // === 4. 合并分片 ===
         self.set_status(TaskStatus::Merging);
 
-        let output_path = self.config.save_path.join(&self.output_filename);
+        let output_filename = ensure_mp4_filename(&self.output_filename);
+        let output_path = self.config.save_path.join(output_filename);
 
         // 确保输出目录存在
         if let Some(parent) = output_path.parent() {
