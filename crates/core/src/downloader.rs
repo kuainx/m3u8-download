@@ -4,8 +4,8 @@ use crate::merger;
 use crate::parser::{self, Segment};
 use futures::stream::{self, StreamExt};
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONNECTION, HOST, UPGRADE_INSECURE_REQUESTS,
-    USER_AGENT,
+    HeaderMap, HeaderValue, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CONNECTION, HOST,
+    UPGRADE_INSECURE_REQUESTS, USER_AGENT,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -37,14 +37,17 @@ pub enum DownloadError {
 
 fn extract_host_header(url: &str) -> Option<HeaderValue> {
     url::Url::parse(url).ok().and_then(|parsed_url| {
-        parsed_url.host_str().map(|host| {
-            let host_header = if let Some(port) = parsed_url.port() {
-                format!("{}:{}", host, port)
-            } else {
-                host.to_string()
-            };
-            HeaderValue::from_str(&host_header).ok()
-        }).flatten()
+        parsed_url
+            .host_str()
+            .map(|host| {
+                let host_header = if let Some(port) = parsed_url.port() {
+                    format!("{}:{}", host, port)
+                } else {
+                    host.to_string()
+                };
+                HeaderValue::from_str(&host_header).ok()
+            })
+            .flatten()
     })
 }
 
@@ -174,22 +177,28 @@ impl DownloadTask {
     async fn run_inner(&self) -> Result<PathBuf, DownloadError> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"));
-        headers.insert(ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"));
+        // headers.insert(ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"));
         headers.insert(
             ACCEPT_LANGUAGE,
             HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"),
         );
         headers.insert(CONNECTION, HeaderValue::from_static("keep-alive"));
+        headers.insert(
+            ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, deflate, br, zstd"),
+        );
         headers.insert(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"));
 
         if let Some(host_value) = extract_host_header(&self.url) {
             headers.insert(HOST, host_value);
         }
 
-
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .default_headers(headers)
+            .gzip(true)
+            .brotli(true)
+            .zstd(true)
             .build()?;
 
         // === 1. 解析 M3U8 ===

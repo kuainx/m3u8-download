@@ -6,7 +6,7 @@ description = "M3U8 downloader core library"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.12", features = ["stream", "gzip", "brotli", "zstd"] }
 m3u8-rs = "6"
 aes = "0.8"
 cbc = "0.1"
