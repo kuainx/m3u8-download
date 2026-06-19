@@ -76,7 +76,10 @@ fn filename_match_keyword(filename: &str) -> String {
         .to_ascii_lowercase()
 }
 
-pub(super) fn find_existing_matching_file(save_path: &str, target_filename: &str) -> Option<String> {
+pub(super) fn find_existing_matching_file(
+    save_path: &str,
+    target_filename: &str,
+) -> Option<String> {
     let keyword = filename_match_keyword(target_filename);
     if keyword.is_empty() {
         return None;
@@ -93,6 +96,15 @@ pub(super) fn find_existing_matching_file(save_path: &str, target_filename: &str
 
     let entries = std::fs::read_dir(save_dir).ok()?;
     for entry in entries.flatten() {
+        // 只处理文件，跳过目录及其他非文件类型
+        if let Ok(metadata) = entry.metadata() {
+            if !metadata.is_file() {
+                continue;
+            }
+        } else {
+            continue; // 无法获取元数据则跳过
+        }
+
         let name = entry.file_name().to_string_lossy().to_string();
         if name.to_ascii_lowercase().contains(&keyword) {
             return Some(name);
